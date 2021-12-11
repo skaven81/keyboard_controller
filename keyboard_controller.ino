@@ -70,7 +70,6 @@
                                  // if clear, CPU must send KBCTRL_INTCLEAR command
 #define CONFIG_BUFFER       0x10 // enable the key buffer
 #define CONFIG_REPEAT       0x20 // enable typematic key repeat
-#define CONFIG_RAW          0x40 // send raw scancodes from the KB
 
 // PS/2 Port
 // Pin 2 must be used for the PS2 clock because it allows interrupts.
