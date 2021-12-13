@@ -147,11 +147,3 @@ If the buffer is disabled, `KEY` and `KEYFLAGS` only contain the most recent unr
 If another keystroke comes in before the current one is read from `KEY`, it replaces the older
 keystroke and the older one is lost.
 
-#### `CONFIG_REPEAT (0x20)`
-
-default: 1 (on)
-
-When on, pressing and holding a key will generate a make event, then if the key is held for
-250ms, the controller will generate repeated make events every 50ms.
-
-
