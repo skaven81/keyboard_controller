@@ -133,9 +133,14 @@ The `KEYFLAGS` register may have the following bits set:
 * `KEYFLAG_ALT         0x08`
 * `KEYFLAG_SUPER       0x10`
 * `KEYFLAG_GUI         0x20`
-* `KEYFLAG_FUNCTION    0x40`
+* `KEYFLAG_FUNCTION    0x40` - One of the F-keys was pressed
 
 A set bit indicates that the key is currently pressed.
+
+* Function keys F1-F9 are indicated by an ASCII 1-9 with `KEYFLAG_FUNCTION` set.
+* Function key F10 is indicated by an ASCII 0 with `KEYFLAG_FUNCTION` set.
+* Function keys F11-12 are indicated by ASCII `!` and `@` with `KEYFLAG_FUNCTION` set.
+
 
 ### Configuration flags
 
