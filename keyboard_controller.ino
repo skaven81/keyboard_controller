@@ -623,30 +623,18 @@ void loop() {
     registers[ADDR_KEY] = current_key;
     registers[ADDR_KEYFLAGS] = current_keyflags;
 
-    // Determine if we need to send the CPU an interrupt
-    if((((current_keyflags & KEYFLAG_MAKEBREAK) > 0) && ((config & CONFIG_INTMAKE) > 0))  ||  // make event and CONFIG_INTMAKE set
-       (((current_keyflags & KEYFLAG_MAKEBREAK) == 0) && ((config & CONFIG_INTBREAK) > 0))) { // break event and CONFIG_INTBREAK set
-
-        if((current_keyflags & (KEYFLAG_SHIFT|KEYFLAG_CTRL|KEYFLAG_ALT|KEYFLAG_SUPER|KEYFLAG_GUI)) > 0) {
-            // special keys only generate interrupts if CONFIG_INTSPECIAL is set
-            if((config & CONFIG_INTSPECIAL) > 0 && !cpuint_pulled) {
-                CPU_INT_DIRS |= CPU_INT_MASK;  // set interrupt pin to output
-                CPU_INT_PORT &= ~CPU_INT_MASK; // set output to zero
-                cpuint_pulled = true;
+    // Determine if we need to send the CPU an interrupt.  Note that CONFIG_INTSPECIAL
+    // is handled in the keystroke capture loop above, so we only drop out of that
+    // loop for special-only keystrokes if CONFIG_INTSPECIAL is set.
+    if(!cpuint_pulled &&
+        ((((current_keyflags & KEYFLAG_MAKEBREAK) > 0) && ((config & CONFIG_INTMAKE) > 0))       // make event and CONFIG_INTMAKE set
+        || (((current_keyflags & KEYFLAG_MAKEBREAK) == 0) && ((config & CONFIG_INTBREAK) > 0)))) // break event and CONFIG_INTBREAK set
+    {
+        CPU_INT_DIRS |= CPU_INT_MASK;  // set interrupt pin to output
+        CPU_INT_PORT &= ~CPU_INT_MASK; // set output to zero
+        cpuint_pulled = true;
 #if DEBUG
-                Serial.println("Pulling CPU_INT low");
+        Serial.println("Pulling CPU_INT low");
 #endif
-            }
-        }
-        else {
-            if(!cpuint_pulled) {
-                CPU_INT_DIRS |= CPU_INT_MASK;  // set interrupt pin to output
-                CPU_INT_PORT &= ~CPU_INT_MASK; // set output to zero
-                cpuint_pulled = true;
-#if DEBUG
-                Serial.println("Pulling CPU_INT low");
-#endif
-            }
-        }
     }
 }
