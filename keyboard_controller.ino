@@ -605,6 +605,8 @@ void loop() {
         Serial.write(print);
     }
     Serial.write("] flags=[");
+    if((current_keyflags & KEYFLAG_MAKEBREAK) > 0) Serial.write("MK,");
+    if((current_keyflags & KEYFLAG_MAKEBREAK) == 0) Serial.write("BK,");
     if((current_keyflags & KEYFLAG_SHIFT) > 0)    Serial.write("SHIFT,");
     if((current_keyflags & KEYFLAG_CTRL) > 0)     Serial.write("CTRL,");
     if((current_keyflags & KEYFLAG_ALT) > 0)      Serial.write("ALT,");
@@ -614,7 +616,10 @@ void loop() {
     Serial.println("]");
 #endif
 
-    // Record the current keystroke
+    // Record the current keystroke.  If the CPU does not read the MAKE event
+    // before the key is released, the CPU may read a break event.  If this
+    // becomes an issue, consider fencing this code so that it only updates
+    // the registers for break events if CONFIG_INTBREAK is set.
     registers[ADDR_KEY] = current_key;
     registers[ADDR_KEYFLAGS] = current_keyflags;
 
