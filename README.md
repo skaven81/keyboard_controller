@@ -6,6 +6,11 @@ Arduino Uno based PS/2 keyboard controller for my homebrew CPU.
 Pin assignments
 ---------------
 
+### PS/2 port
+
+* Clock: D2
+* Data: A4
+
 ### Data bus
 
 * High nibble pins D7-D4 (port D high nibble)
