@@ -3,9 +3,10 @@
 // Addresses
 #define ADDR_KEY            0x00 // last scanned key (read-only)
 #define ADDR_KEYFLAGS       0x01 // flags from last scanned key (read-only)
-#define ADDR_BUFLEN         0x02 // keystrokes remaining in the buffer (read-only)
+#define ADDR_BUFLEN         0x02 // keystrokes remaining in the buffer (read-only) [not implemented]
 #define ADDR_KBCTRL         0X03 // send commands to the keyboard (write-only)
 #define ADDR_CONFIG         0x04 // configuration flags (read-write)
+#define config registers[ADDR_CONFIG]
 
 // ADDR_KEYFLAGS
 #define KEYFLAG_MAKEBREAK   0x01 // MAKE=1, BREAK=0
@@ -17,6 +18,7 @@
 #define KEYFLAG_FUNCTION    0x40
 
 // ADDR_KBCTRL
+#define KBCTRL_NONE         0x00
 #define KBCTRL_NUMLOCK_ON   0x01
 #define KBCTRL_NUMLOCK_OFF  0x02
 #define KBCTRL_CAPSLOCK_ON  0x03
@@ -24,17 +26,67 @@
 #define KBCTRL_KB_RESET     0x05
 #define KBCTRL_BUFCLEAR     0x06
 #define KBCTRL_INTCLEAR     0x07
-#define KBCTRL_REPEAT_ON    0x08
-#define KBCTRL_REPEAT_OFF   0x09
 
 // ADDR_CONFIG
 #define CONFIG_INTMAKE      0x01 // generate interrupt on key make events
 #define CONFIG_INTBREAK     0x02 // generate interrupt on key break events
 #define CONFIG_INTSPECIAL   0x04 // generate interrupts for shift/ctrl/alt/super
-#define CONFIG_INTCLR_READ  0x08 // if set, CPU_INT_PIN clears upon reading ADDR_KEY if buffer is empty
+#define CONFIG_INTCLR_READ  0x08 // if set, CPU_INT_PIN clears upon reading ADDR_KEY
                                  // if clear, CPU must send KBCTRL_INTCLEAR command
-#define CONFIG_BUFFER       0x10 // enable the key buffer
+#define CONFIG_BUFFER       0x10 // enable the key buffer [not implemented]
 
+// unfortunately we can't use all of PORTD (digital pins 0-7) for the data bus,
+// because pins 0 and 1 are used for serial, and pins 2 and 3 are used for
+// interrupts.  So we put the low nibble at the bottom of PORTB and the high
+// nibble at the top of PORTD
+#define DATABUS_LOW_PORT PORTB
+#define DATABUS_LOW_DIRS DDRB
+#define DATABUS_LOW_PINS PINB
+#define DATABUS_LOW_MASK 0x0f // pins 8-11
+#define DATABUS_HIGH_PORT PORTD
+#define DATABUS_HIGH_PINS PIND
+#define DATABUS_HIGH_DIRS DDRD
+#define DATABUS_HIGH_MASK 0xf0 // pins 4-7
+
+// CPU interrupt -- pull low to signal an interrupt to the CPU
+#define CPU_INT_PORT PORTB
+#define CPU_INT_PINS PINB
+#define CPU_INT_DIRS DDRB
+#define CPU_INT_MASK 0x10       // pin 12
+
+// CPU clock -- so we can synchronize writes on clock edges.
+#define CPU_CLK_PINS PINB
+#define CPU_CLK_MASK 0x20       // pin 13
+
+// Enable -- low level indicates the CPU is reading or writing from the controller
+// When this pin transitions from high to low it triggers an interrupt where the CPU
+// is provided I/O service.
+#define ENABLE_PIN_PORT PORTD
+#define ENABLE_PIN_PINS PIND
+#define ENABLE_PIN_DIRS DDRD
+#define ENABLE_PIN_MASK 0x08    // pin 3
+#define ENABLE_PIN      3
+
+// Address -- support for 8 registers
+#define ADDR_PORT       PORTC
+#define ADDR_PINS       PINC
+#define ADDR_PINS_MASK  0x07    // pins A0-2
+
+// Write -- low level indicates the CPU wants to write; data is
+// committed on the falling edge of CLK_PIN
+#define WRITE_PORT      PORTC
+#define WRITE_PINS      PINC
+#define WRITE_PINS_MASK 0x08    // pin A3
+
+// PS/2 Port
+// Pin 2 must be used for the PS2 clock because it allows interrupts.
+#define PS2_CLOCK_PIN 2
+#define PS2_DATA_PIN A4
+
+// DEBUG 0: no serial debugging output
+// DEBUG 1: Just the captured events
+// DEBUG 2: Everything
+#define DEBUG 1
 
 const char scancode_to_ascii[] PROGMEM = {
         '\0', // [00] unused

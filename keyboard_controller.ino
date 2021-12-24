@@ -5,50 +5,8 @@
 #include "ps2_ScanCodeSet.h"
 #include "ps2_KeyboardOutput.h"
 #include "keyboard_controller.h"
+#include "Arduino.h"
 
-// unfortunately we can't use all of PORTD (digital pins 0-7) for the data bus,
-// because pins 0 and 1 are used for serial, and pins 2 and 3 are used for
-// interrupts.  So we put the low nibble at the top of PORTD and the high
-// nibble at the bottom of PORTB
-#define DATABUS_LOW PORTD & 0xf0
-#define DATABUS0_PIN 4
-#define DATABUS1_PIN 5
-#define DATABUS2_PIN 6
-#define DATABUS3_PIN 7
-#define DATABUS_HIGH PORTB & 0x0f
-#define DATABUS4_PIN 8
-#define DATABUS5_PIN 9
-#define DATABUS6_PIN 10
-#define DATABUS7_PIN 11
-
-// CPU interrupt -- pull low to signal an interrupt to the CPU
-#define CPU_INT_PIN 12
-
-// CPU clock -- so we can synchronize writes on clock edges. This
-// pin might need interrupts, so we use pin 3.
-#define CPU_CLK_PIN 3
-
-// Enable -- high level indicates the CPU is reading or writing from the controller
-#define ENABLE_PIN 13
-
-// Write -- low level indicates the CPU wants to write; data is
-// committed on the falling edge of CLK_PIN
-#define WRITE_PIN A1
-
-// Address -- support for 8 registers:
-#define ADDR0_PIN       A3
-#define ADDR1_PIN       A4
-#define ADDR2_PIN       A5
-
-// PS/2 Port
-// Pin 2 must be used for the PS2 clock because it allows interrupts.
-#define PS2_CLOCK_PIN 2
-#define PS2_DATA_PIN A0
-
-// DEBUG 0: no serial debugging output
-// DEBUG 1: Just the captured events
-// DEBUG 2: Everything
-#define DEBUG 1
 #if DEBUG
 typedef ps2::SimpleDiagnostics<254> Diagnostics_;
 #else
@@ -59,13 +17,7 @@ static Diagnostics_ diagnostics;
 //                   data         clock         bufsize, diagnostics-class
 static ps2::Keyboard<PS2_DATA_PIN,PS2_CLOCK_PIN,16     , Diagnostics_> ps2Keyboard(diagnostics);
 
-static char keybuf[16];
-static char *key;
-static char keyflagsbuf[16];
-static char *keyflags;
-static char buflen;
-static char config;
-
+static uint8_t registers[8];
 
 // These need to be globals because even though they are only used in loop(),
 // they get reinitialized each time loop() is called
@@ -76,58 +28,138 @@ bool numlock_on;
 bool capslock_on;
 bool scrolllock_on;
 
+void handle_cpu_request() {
+    /*
+    Assuming various clock speeds, we have a pretty short time budget
+    to get in and out of this routine.
+    
+     | Clock | Cycle time | 10x steps time |
+     | 1MHz  | 1000ns     | 10.0us         |
+     | 2MHz  |  500ns     |  5.0us         |
+     | 4MHz  |  250ns     |  2.5us         |
+    
+    The natural idea would be to run this from an interrupt when the enable pin
+    goes low.  However, In the absence of any optimization, it takes about 4us
+    just to get into the ISR and execute the first couple instructions.  That
+    severely blows our time budget without even running a single line of code.
+    
+    Getting the initial reaction time down can be done in several ways:
+    https://arduino.stackexchange.com/questions/8758/arduino-interruption-on-pin-change
+    
+    Eliminating the `attachInterrupt()` code in the Arduino library cuts the
+    reaction time down to just 2.5us, which is a lot better but still not fast
+    enough for a 2MHz clock.  And it also means I'd have to rewrite the
+    interrupt bits of the keyboard library, which doesn't seem like a good
+    idea.
+    
+    So instead we use the polling method.  It means having to be a bit more
+    careful about timing, but ultimately everything we do in here is going
+    to be so slow (compared to the CPU's clock) that we can really just do
+    everything as fast as we want, and the CPU should be able to handle it,
+    provided we give the CPU several clocks to finish the operation.
+    
+    With the standard attachInterrupt() ISR method:
+      First ISR instruction @ 4.26us from ~ENABLE transition low
+      Exit ISR @ 7.44us from ~ENABLE transition low (4.26us processing time)
+    With polling:
+      First ISR instruction @ 1.20us OR 2.1us from ~ENABLE transition low
+      Exit ISR @ 4.62us OR 5.54us from ~ENABLE transition low (4.26us processing time)
+    
+    So polling is faster, but less deterministic.
+    */
+
+#if DEBUG
+    char print[64];
+    bool did_print = false;
+#endif
+
+    // By the time we get here, it has been at least 440ns since the /ENABLE
+    // pin went low.  So we expect that the other pins such as /WRITE are
+    // and ADDR are already settled, and there is no need to wait.
+
+    // Write operation?
+    if( (WRITE_PINS & WRITE_PINS_MASK) == 0 ) {
+        // read what is on the data bus into our registers as
+        // long as the enable pin is low
+        while((ENABLE_PIN_PINS & ENABLE_PIN_MASK) == 0) {
+            registers[ADDR_PINS & ADDR_PINS_MASK] =
+                (DATABUS_HIGH_PINS & DATABUS_HIGH_MASK) | (DATABUS_LOW_PINS & DATABUS_LOW_MASK);
+#if DEBUG
+            if(!did_print) {
+                sprintf(print, "WRITE (from CPU) [%02x] to addr %01x", 
+                        (DATABUS_HIGH_PINS & DATABUS_HIGH_MASK) | (DATABUS_LOW_PINS & DATABUS_LOW_MASK),
+                        ADDR_PINS & ADDR_PINS_MASK);
+                Serial.println(print);
+                did_print = true;
+            }
+#endif
+        }
+    }
+    // Read operation?
+    else {
+        // set data bus to output
+        DATABUS_LOW_DIRS |= DATABUS_LOW_MASK;
+        DATABUS_HIGH_DIRS |= DATABUS_HIGH_MASK;
+        // set data bus values as long as the enable pin is low
+        while((ENABLE_PIN_PINS & ENABLE_PIN_MASK) == 0) {
+            DATABUS_LOW_PORT = (DATABUS_LOW_PORT & ~DATABUS_LOW_MASK) | (registers[ADDR_PINS & ADDR_PINS_MASK] & DATABUS_LOW_MASK);
+            DATABUS_HIGH_PORT = (DATABUS_HIGH_PORT & ~DATABUS_HIGH_MASK) | (registers[ADDR_PINS & ADDR_PINS_MASK] & DATABUS_HIGH_MASK);
+#if DEBUG
+            if(!did_print) {
+                sprintf(print, "READ (to CPU) [%02x] from addr %01x", 
+                        registers[ADDR_PINS & ADDR_PINS_MASK],
+                        ADDR_PINS & ADDR_PINS_MASK);
+                Serial.println(print);
+                did_print = true;
+            }
+#endif
+        }
+        // if the read was from ADDR_KEY...
+        if((ADDR_PINS & ADDR_PINS_MASK) == ADDR_KEY) {
+            // ...and CONFIG_INTCLR_READ is set then we need to clear the interrupt line
+            if((config & CONFIG_INTCLR_READ) > 0) {
+                CPU_INT_DIRS &= ~CPU_INT_MASK; // set interrupt pin to input
+                CPU_INT_PORT &= ~CPU_INT_MASK; // disable pullup
+#if DEBUG
+                Serial.println("Releasing CPU_INT (read ADDR_KEY)");
+#endif
+            }
+            // blank out ADDR_KEY and ADDR_KEYFLAGS to indicate we have read this key
+            registers[ADDR_KEY] = '\0';
+            registers[ADDR_KEYFLAGS] = 0x00;
+        }
+        // return data bus pins to input
+        DATABUS_LOW_DIRS &= ~DATABUS_LOW_MASK;
+        DATABUS_HIGH_DIRS &= ~DATABUS_HIGH_MASK;
+        // disable pullups
+        DATABUS_LOW_PORT &= ~DATABUS_LOW_MASK;
+        DATABUS_HIGH_PORT &= ~DATABUS_HIGH_MASK;
+    }
+
+    return;
+}
+
 void setup() {
 #if DEBUG
-    Serial.begin(9600);
+    Serial.begin(115200);
 #endif
-    // Set up the non-keyboard I/O pins. The uC defaults
-    // all pins to INPUT by default, so this is just for clarity
-    pinMode(DATABUS0_PIN, INPUT);
-    pinMode(DATABUS1_PIN, INPUT);
-    pinMode(DATABUS2_PIN, INPUT);
-    pinMode(DATABUS3_PIN, INPUT);
-    pinMode(DATABUS4_PIN, INPUT);
-    pinMode(DATABUS5_PIN, INPUT);
-    pinMode(DATABUS6_PIN, INPUT);
-    pinMode(DATABUS7_PIN, INPUT);
-    pinMode(CPU_INT_PIN, INPUT);
-    pinMode(CPU_CLK_PIN, INPUT);
-    pinMode(ENABLE_PIN, INPUT);
-    pinMode(WRITE_PIN, INPUT);
-    pinMode(ADDR0_PIN, INPUT);
-    pinMode(ADDR1_PIN, INPUT);
-    pinMode(ADDR2_PIN, INPUT);
-    // All of the pins noted above are connected to concrete
-    // nets and will not float, so no pullups are required.
-    digitalWrite(DATABUS0_PIN, LOW);
-    digitalWrite(DATABUS1_PIN, LOW);
-    digitalWrite(DATABUS2_PIN, LOW);
-    digitalWrite(DATABUS3_PIN, LOW);
-    digitalWrite(DATABUS4_PIN, LOW);
-    digitalWrite(DATABUS5_PIN, LOW);
-    digitalWrite(DATABUS6_PIN, LOW);
-    digitalWrite(DATABUS7_PIN, LOW);
-    digitalWrite(CPU_INT_PIN, LOW);
-    digitalWrite(CPU_CLK_PIN, LOW);
-    digitalWrite(ENABLE_PIN, LOW);
-    digitalWrite(WRITE_PIN, LOW);
-    digitalWrite(ADDR0_PIN, LOW);
-    digitalWrite(ADDR1_PIN, LOW);
-    digitalWrite(ADDR2_PIN, LOW);
-    
+    // XXX set internal pullups on assorted pins
+    DATABUS_LOW_PORT |= DATABUS_LOW_MASK;
+    DATABUS_HIGH_PORT |= DATABUS_HIGH_MASK;
+    CPU_INT_PORT |= CPU_INT_MASK;
+    ADDR_PORT |= ADDR_PINS_MASK;
+    WRITE_PORT |= WRITE_PINS_MASK;
+    // XXX
+
     // Initialize internal registers
-    key = keybuf;
-    keyflags = keyflagsbuf;
-    buflen = 0;
-    for(int i=0; i<16; i++) {
-        keybuf[i] = '\0';
-        keyflagsbuf[i] = '\0';
-    }
-    config = (CONFIG_INTCLR_READ | CONFIG_BUFFER);
+    registers[ADDR_KEY] = '\0';
+    registers[ADDR_KEYFLAGS] = 0x00;
+    registers[ADDR_BUFLEN] = 0;
+    registers[ADDR_KBCTRL] = 0x00;
+    registers[ADDR_CONFIG] = (CONFIG_INTMAKE | CONFIG_INTCLR_READ | CONFIG_BUFFER);
 
     // Initialize keyboard
     ps2Keyboard.begin();
-    //keyMapping.setNumLock(true);
     ps2Keyboard.awaitStartup();
 
 #if DEBUG
@@ -171,6 +203,11 @@ void setup() {
     // this ourselves.
     ps2Keyboard.sendLedStatus(ps2::KeyboardLeds::numLock);
 
+    // Now that we are initialized, enable the interrupts on
+    // the enable pin, so we begin servicing the CPU
+    pinMode(ENABLE_PIN, INPUT_PULLUP);
+    //attachInterrupt(digitalPinToInterrupt(ENABLE_PIN), handle_cpu_request, FALLING);
+
 #if DEBUG
     Serial.println("Ready");
 #endif
@@ -190,10 +227,62 @@ void loop() {
     // the loop to decide what to do with the keypress (e.g. whether or not to raise an
     // interrupt, how to manage the key event buffer, etc.
     do {
-        // TODO: handle port I/O events
+        // Since we're in a tight loop here waiting for an event that happens very infrequently,
+        // we handle CPU operations here, instead of setting up an interrupt.  See the comments
+        // in handle_cpu_request() for why it's done this way instead of an interrupt.
+        if((ENABLE_PIN_PINS & ENABLE_PIN_MASK) == 0) {
+            handle_cpu_request();
 
+            // if a byte was written to the ADDR_KBCTRL register, handle that command
+            switch(registers[ADDR_KBCTRL]) {
+                case KBCTRL_NONE:
+                    break;
+                case KBCTRL_NUMLOCK_ON:
+                    numlock_on = true;
+                    current_leds = (capslock_on ? ps2::KeyboardLeds::capsLock : ps2::KeyboardLeds::none)
+                                 | (numlock_on ? ps2::KeyboardLeds::numLock : ps2::KeyboardLeds::none)
+                                 | (scrolllock_on ? ps2::KeyboardLeds::scrollLock : ps2::KeyboardLeds::none);
+                    ps2Keyboard.sendLedStatus(current_leds);
+                    break;
+                case KBCTRL_NUMLOCK_OFF:
+                    numlock_on = false;
+                    current_leds = (capslock_on ? ps2::KeyboardLeds::capsLock : ps2::KeyboardLeds::none)
+                                 | (numlock_on ? ps2::KeyboardLeds::numLock : ps2::KeyboardLeds::none)
+                                 | (scrolllock_on ? ps2::KeyboardLeds::scrollLock : ps2::KeyboardLeds::none);
+                    ps2Keyboard.sendLedStatus(current_leds);
+                    break;
+                case KBCTRL_CAPSLOCK_ON:
+                    capslock_on = true;
+                    current_leds = (capslock_on ? ps2::KeyboardLeds::capsLock : ps2::KeyboardLeds::none)
+                                 | (numlock_on ? ps2::KeyboardLeds::numLock : ps2::KeyboardLeds::none)
+                                 | (scrolllock_on ? ps2::KeyboardLeds::scrollLock : ps2::KeyboardLeds::none);
+                    ps2Keyboard.sendLedStatus(current_leds);
+                    break;
+                case KBCTRL_CAPSLOCK_OFF:
+                    capslock_on = false;
+                    current_leds = (capslock_on ? ps2::KeyboardLeds::capsLock : ps2::KeyboardLeds::none)
+                                 | (numlock_on ? ps2::KeyboardLeds::numLock : ps2::KeyboardLeds::none)
+                                 | (scrolllock_on ? ps2::KeyboardLeds::scrollLock : ps2::KeyboardLeds::none);
+                    ps2Keyboard.sendLedStatus(current_leds);
+                    break;
+                case KBCTRL_KB_RESET:
+                    setup();
+                    break;
+                case KBCTRL_BUFCLEAR:
+                    // not implemented
+                    break;
+                case KBCTRL_INTCLEAR:
+                    CPU_INT_DIRS &= ~CPU_INT_MASK; // set interrupt pin to input
+                    CPU_INT_PORT &= ~CPU_INT_MASK; // disable pullup
+#if DEBUG
+                    Serial.println("Releasing CPU_INT (KBCTRL_INTCLEAR)");
+#endif
+                    break;
+            }
+        }
+        
         scanCode = ps2Keyboard.readScanCode();
-        if (scanCode == ps2::KeyboardOutput::garbled) {
+        if(scanCode == ps2::KeyboardOutput::garbled) {
 #if DEBUG
             Serial.println("Garbled, reset");
 #endif
@@ -520,6 +609,30 @@ void loop() {
     Serial.println("]");
 #endif
 
-    // TODO: push the new key and flags into the buffer
+    // Record the current keystroke
+    registers[ADDR_KEY] = current_key;
+    registers[ADDR_KEYFLAGS] = current_keyflags;
 
+    // Determine if we need to send the CPU an interrupt
+    if((((current_keyflags & KEYFLAG_MAKEBREAK) > 0) && ((config & CONFIG_INTMAKE) > 0))  ||  // make event and CONFIG_INTMAKE set
+       (((current_keyflags & KEYFLAG_MAKEBREAK) == 0) && ((config & CONFIG_INTBREAK) > 0))) { // break event and CONFIG_INTBREAK set
+
+        if((current_keyflags & (KEYFLAG_SHIFT|KEYFLAG_CTRL|KEYFLAG_ALT|KEYFLAG_SUPER|KEYFLAG_GUI|KEYFLAG_FUNCTION)) > 0) {
+            // special keys only generate interrupts if CONFIG_INTSPECIAL is set
+            if((config & CONFIG_INTSPECIAL) > 0) {
+                CPU_INT_DIRS |= CPU_INT_MASK;  // set interrupt pin to output
+                CPU_INT_PORT &= ~CPU_INT_MASK; // set output to zero
+#if DEBUG
+                Serial.println("Pulling CPU_INT low");
+#endif
+            }
+        }
+        else {
+            CPU_INT_DIRS |= CPU_INT_MASK;  // set interrupt pin to output
+            CPU_INT_PORT &= ~CPU_INT_MASK; // set output to zero
+#if DEBUG
+            Serial.println("Pulling CPU_INT low");
+#endif
+        }
+    }
 }
