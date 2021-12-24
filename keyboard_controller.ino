@@ -27,6 +27,7 @@ ps2::KeyboardLeds current_leds;
 bool numlock_on;
 bool capslock_on;
 bool scrolllock_on;
+bool cpuint_pulled = false;
 
 void handle_cpu_request() {
     /*
@@ -117,9 +118,10 @@ void handle_cpu_request() {
         // if the read was from ADDR_KEY...
         if((ADDR_PINS & ADDR_PINS_MASK) == ADDR_KEY) {
             // ...and CONFIG_INTCLR_READ is set then we need to clear the interrupt line
-            if((config & CONFIG_INTCLR_READ) > 0) {
+            if((config & CONFIG_INTCLR_READ) > 0 && cpuint_pulled) {
                 CPU_INT_DIRS &= ~CPU_INT_MASK; // set interrupt pin to input
                 CPU_INT_PORT &= ~CPU_INT_MASK; // disable pullup
+                cpuint_pulled = false;
 #if DEBUG
                 Serial.println("Releasing CPU_INT (read ADDR_KEY)");
 #endif
@@ -272,11 +274,14 @@ void loop() {
                     // not implemented
                     break;
                 case KBCTRL_INTCLEAR:
-                    CPU_INT_DIRS &= ~CPU_INT_MASK; // set interrupt pin to input
-                    CPU_INT_PORT &= ~CPU_INT_MASK; // disable pullup
+                    if(cpuint_pulled) {
+                        CPU_INT_DIRS &= ~CPU_INT_MASK; // set interrupt pin to input
+                        CPU_INT_PORT &= ~CPU_INT_MASK; // disable pullup
+                        cpuint_pulled = false;
 #if DEBUG
-                    Serial.println("Releasing CPU_INT (KBCTRL_INTCLEAR)");
+                        Serial.println("Releasing CPU_INT (KBCTRL_INTCLEAR)");
 #endif
+                    }
                     break;
             }
         }
@@ -619,20 +624,24 @@ void loop() {
 
         if((current_keyflags & (KEYFLAG_SHIFT|KEYFLAG_CTRL|KEYFLAG_ALT|KEYFLAG_SUPER|KEYFLAG_GUI|KEYFLAG_FUNCTION)) > 0) {
             // special keys only generate interrupts if CONFIG_INTSPECIAL is set
-            if((config & CONFIG_INTSPECIAL) > 0) {
+            if((config & CONFIG_INTSPECIAL) > 0 && !cpuint_pulled) {
                 CPU_INT_DIRS |= CPU_INT_MASK;  // set interrupt pin to output
                 CPU_INT_PORT &= ~CPU_INT_MASK; // set output to zero
+                cpuint_pulled = true;
 #if DEBUG
                 Serial.println("Pulling CPU_INT low");
 #endif
             }
         }
         else {
-            CPU_INT_DIRS |= CPU_INT_MASK;  // set interrupt pin to output
-            CPU_INT_PORT &= ~CPU_INT_MASK; // set output to zero
+            if(!cpuint_pulled) {
+                CPU_INT_DIRS |= CPU_INT_MASK;  // set interrupt pin to output
+                CPU_INT_PORT &= ~CPU_INT_MASK; // set output to zero
+                cpuint_pulled = true;
 #if DEBUG
-            Serial.println("Pulling CPU_INT low");
+                Serial.println("Pulling CPU_INT low");
 #endif
+            }
         }
     }
 }
