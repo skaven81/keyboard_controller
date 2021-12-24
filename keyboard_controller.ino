@@ -622,7 +622,7 @@ void loop() {
     if((((current_keyflags & KEYFLAG_MAKEBREAK) > 0) && ((config & CONFIG_INTMAKE) > 0))  ||  // make event and CONFIG_INTMAKE set
        (((current_keyflags & KEYFLAG_MAKEBREAK) == 0) && ((config & CONFIG_INTBREAK) > 0))) { // break event and CONFIG_INTBREAK set
 
-        if((current_keyflags & (KEYFLAG_SHIFT|KEYFLAG_CTRL|KEYFLAG_ALT|KEYFLAG_SUPER|KEYFLAG_GUI|KEYFLAG_FUNCTION)) > 0) {
+        if((current_keyflags & (KEYFLAG_SHIFT|KEYFLAG_CTRL|KEYFLAG_ALT|KEYFLAG_SUPER|KEYFLAG_GUI)) > 0) {
             // special keys only generate interrupts if CONFIG_INTSPECIAL is set
             if((config & CONFIG_INTSPECIAL) > 0 && !cpuint_pulled) {
                 CPU_INT_DIRS |= CPU_INT_MASK;  // set interrupt pin to output
