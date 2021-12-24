@@ -6,86 +6,104 @@ Arduino Uno based PS/2 keyboard controller for my homebrew CPU.
 Pin assignments
 ---------------
 
-TBD
+### Data bus
 
-Truth Table
------------
+* High nibble pins D7-D4 (port D high nibble)
+* Low nibble pins D11-D8 (port B low nibble)
 
-| ENABLE | CPU_CLK | /WRITE | ADDR[2:0] | DATA[7:0] | Note |
-| ------ | ------- | ------ | --------- | --------- | ---- |
-|   0    |    X    |    X   |     X     |   float   | All outputs disabled |
-|   1    |  rise   |    0   |    0-7    |   input   | Prepare to write DATA to ADDR |
-|   1    |    1    |    0   |    0-7    |   input   | Prepare to write DATA to ADDR |
-|   1    |  fall   |    0   |    0-7    |   input   | Commit DATA to ADDR |
-|   1    |    0    |    0   |    0-7    |   input   | Prepare to write DATA to ADDR |
-|   1    |    X    |    1   |    0-7    |   output  | Present ADDR to DATA |
+Inputs by default, outputs when enable=0 and write=1
 
+### Interrupt: D12
+
+Input by default (with no pullup).  Output with level=0
+when interrupt is set.
+
+### Clock: D13
+
+Not used
+
+### Enable: D3
+
+Input.  Pull low to enable CPU communication.
+
+### Write: A3
+
+Input.  High=read, Low=write
+
+### Address: A2-A0
+
+Input. 
+
+* `ADDR_KEY      0x00` - last scanned key (read-only)
+* `ADDR_KEYFLAGS 0x01` - flags from last scanned key (read-only)
+* `ADDR_BUFLEN   0x02` - keystrokes remaining in the buffer (read-only) [not implemented]
+* `ADDR_KBCTRL   0X03` - send commands to the keyboard (write-only)
+* `ADDR_CONFIG   0x04` - configuration flags (read-write)
 
 Usage
 -----
 
 ### Idle state
 
-When the `ENABLE` pin is set low, the controller goes into an idle state, and
+When the `ENABLE` pin is set high, the controller goes into an idle state, and
 cedes control of the data bus.
 
 While in idle state, the controller is monitoring the keyboard for events.
 
+The most recent keystroke is immediately stored in `ADDR_KEY`, and the most
+recent flags for that keystroke in `ADDR_KEYFLAGS`.  New keystrokes overwrite
+old ones.
+
 ### Read registers
 
-When the `ENABLE` and `/WRITE` pins are high, the controller is in read mode.
+When `ENABLE=0` and `WRITE=1`, the controller is in read mode.
 The contents of the register referenced by `ADDR[2:0]` are presented to the
-data bus.
+data bus, until `ENABLE=1`.
 
 ### Write registers
 
-When the `ENABLE` pin is high and `/WRITE` is low, the controller will begin
-preparing to write the data on the data bus to the register referenced by
-`ADDR[2:0]`.
+When `ENABLE=0` and `WRITE=0` is low, the controller will write 
+the data on the data bus to the register referenced by `ADDR[2:0]`.
+At this stage it behaves like a transparent latch.
 
-When `CPU_CLK` transitions from high to low, the data is committed.
+The data is committed/latched when `ENABLE=1`.
 
 ### CPU Interrupts
 
 The controller can be configured to interrupt the CPU upon various events.
 These events are configured in the `CONFIG` register (address `0x04`).
 
-* `0x01 - CONFIG_INTMAKE` - if set, an interrupt will be signaled when a
-  keyboard key is pressed
-* `0x02 - CONFIG_INTBREAK` - if set, an interrupt will be signaled when a
-  keyboard key is released
-* `0x04 - CONFIG_INTSPECIAL` - if set, an interrupt will be signaled when
-  Shift, Ctrl, Alt, or Super are pressed.
+* `0x01 - CONFIG_INTMAKE` - if set, an interrupt will be signaled when a keyboard key is pressed
+* `0x02 - CONFIG_INTBREAK` - if set, an interrupt will be signaled when a keyboard key is released
+* `0x04 - CONFIG_INTSPECIAL` - if set, an interrupt will be signaled even for special keys
+
+If `CONFIG_INTSPECIAL` is clear, make/break events for special keys do not
+generate an interrupt.  Set this bit to enable this behavior.
 
 Once an interrupt is signaled, clearing the interrupt can be done in one
 of three ways:
 
 * If `CONFIG_INTCLR_READ (0x08)` is set, then the interrupt is cleared
-  as soon as a read operation to the `KEY` register (address `0x00`)
-  completes, resulting in an empty buffer.
+  as soon as a read operation to the `ADDR_KEY` register (address `0x00`)
+  completes.
 * The `KBCTRL_INTCLEAR` command (`0x07`) is written to the `KBCTRL` register
   (address `0x03`).
 * The `KBCTRL_BUFCLEAR` command (`0x06`) is written to the `KBCTRL` register
-  (address `0x03`).
+  (address `0x03`). (not implemented)
 
 ### Reading key events: `KEY` and `KEYFLAGS` registers (`0x00` and `0x01`)
 
-The `KEY` register is considered to have been "read" if `/WRITE` is high,
-`ENABLE` is high, `ADDR[2:0]` is `0x00`, and `CPU_CLK` transitions from
-high to low.
+The `KEY` register is considered to have been "read" if `ENABLE=0`,
+`WRITE=1`, `ADDR[2:0]=0x00`, and `ENABLE` transitions back to 1.
 
-When a read of `KEY` is completed, the next key in the buffer (if any)
-is shifted to the `KEY` register.
+When a read of `KEY` is completed, `KEY` and `KEYFLAGS` registers are
+reset to `0x00`.  Be sure to read `KEYFLAGS` _before_ `KEY`!
 
-When there is no active keystroke, the `KEY` register will contain `0x00`.
+When there is no active keystroke, the `KEY` and `KEYFLAGS` registers will
+contain `0x00`.
 
 The `KEY` register will contain ASCII representations of the key that was
 pressed (or released, if `CONFIG_INTBREAK` is set).
-
-The `KEYFLAGS` register is buffered in parallel with `KEY`, and allows
-the CPU to determine what specific event caused the interrupt (make vs
-break) and also to determine whether any modifier keys were pressed with
-the key.
 
 For example, to have the CPU detect that Ctrl+c was pressed, only the
 `CONFIG_INTMAKE` need be set.  When the user presses Ctrl, no interrupt
@@ -93,12 +111,26 @@ will be generated (as `CONFIG_INTSPECIAL` is not set).  Then when the
 user also presses `c`, an interrupt is generated as the key is pressed.
 
 During the interrupt handler, the CPU can read from `KEYFLAGS` and will
-observe that `KEYFLAG_LCTRL` is set, as well as `KEYFLAG_MAKEBREAK`.
+observe that `KEYFLAG_CTRL` is set, as well as `KEYFLAG_MAKEBREAK`.
 The CPU then reads `KEY` and gets back `c`, confirming that Ctrl+c was
 pressed.
 
 The read of `KEY` automatically clears the interrupt (if `CONFIG_INTCLR_READ`
 is set).
+
+### Key flags
+
+The `KEYFLAGS` register may have the following bits set:
+
+* `KEYFLAG_MAKEBREAK   0x01` - make=1, break=0
+* `KEYFLAG_SHIFT       0x02`
+* `KEYFLAG_CTRL        0x04`
+* `KEYFLAG_ALT         0x08`
+* `KEYFLAG_SUPER       0x10`
+* `KEYFLAG_GUI         0x20`
+* `KEYFLAG_FUNCTION    0x40`
+
+A set bit indicates that the key is currently pressed.
 
 ### Configuration flags
 
@@ -132,18 +164,19 @@ the `KEY` register and the buffer is empty (or disabled).
 
 #### `CONFIG_BUFFER (0x10)`
 
-default: 1 (on)
+Not implemented
 
-Up to 16 keystrokes are queued in the controller for the CPU to read.  Each read operation to
-the `KEY` register shifts the buffer.  If the buffer gets full, the oldest keystrokes are
-silently discarded to make room for the newer ones.
+### Keyboard control commands
 
-When interrupts are used to capture keystrokes, the buffer acts as a way to prevent missing
-a keystroke that might come in while the interrupt handler is running, by keeping the interrupt
-line held low after the read of `KEY`.  The next keystroke is shifted into `KEY` and the CPU
-loops back into the interrupt handler, handling the next keystroke.
+The following bytes can be written to `ADDR_KBCTRL` to make the controller execute certain commands.
+After the command is completed, the register resets to `0x00`.
 
-If the buffer is disabled, `KEY` and `KEYFLAGS` only contain the most recent unread keystroke.
-If another keystroke comes in before the current one is read from `KEY`, it replaces the older
-keystroke and the older one is lost.
+* `KBCTRL_NONE         0x00`
+* `KBCTRL_NUMLOCK_ON   0x01`
+* `KBCTRL_NUMLOCK_OFF  0x02`
+* `KBCTRL_CAPSLOCK_ON  0x03`
+* `KBCTRL_CAPSLOCK_OFF 0x04`
+* `KBCTRL_KB_RESET     0x05`
+* `KBCTRL_BUFCLEAR     0x06` - not implemented
+* `KBCTRL_INTCLEAR     0x07` - clears interrupt, for use when `CONFIG_INTCLR_READ` is not set
 
