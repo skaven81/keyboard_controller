@@ -48,6 +48,15 @@ Input.
 Usage
 -----
 
+### Startup
+
+The controller takes quite some time to initialize, and during initialization,
+writing to its control registers will not work.  So the controller will signal
+the CPU that it has finished initializing by triggering an interrupt.
+
+The CPU is responsible for clearing the interrupt before using the controller,
+generally by writing `KBCTRL_INTCLEAR` to `ADDR_KBCTRL`.
+
 ### Idle state
 
 When the `ENABLE` pin is set high, the controller goes into an idle state, and

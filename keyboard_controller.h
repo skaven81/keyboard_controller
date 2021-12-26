@@ -65,7 +65,6 @@
 #define ENABLE_PIN_PINS PIND
 #define ENABLE_PIN_DIRS DDRD
 #define ENABLE_PIN_MASK 0x08    // pin 3
-#define ENABLE_PIN      3
 
 // Address -- support for 8 registers
 #define ADDR_PORT       PORTC

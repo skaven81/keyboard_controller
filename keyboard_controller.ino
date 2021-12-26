@@ -144,14 +144,14 @@ void handle_cpu_request() {
 void setup() {
 #if DEBUG
     Serial.begin(115200);
-#endif
-    // XXX set internal pullups on assorted pins
+    // if debugging, set internal pullups on assorted pins
     DATABUS_LOW_PORT |= DATABUS_LOW_MASK;
     DATABUS_HIGH_PORT |= DATABUS_HIGH_MASK;
     CPU_INT_PORT |= CPU_INT_MASK;
     ADDR_PORT |= ADDR_PINS_MASK;
     WRITE_PORT |= WRITE_PINS_MASK;
-    // XXX
+    ENABLE_PIN_PORT |= ENABLE_PIN_MASK;
+#endif
 
     // Initialize internal registers
     registers[ADDR_KEY] = '\0';
@@ -205,14 +205,15 @@ void setup() {
     // this ourselves.
     ps2Keyboard.sendLedStatus(ps2::KeyboardLeds::numLock);
 
-    // Now that we are initialized, enable the interrupts on
-    // the enable pin, so we begin servicing the CPU
-    pinMode(ENABLE_PIN, INPUT_PULLUP);
-    //attachInterrupt(digitalPinToInterrupt(ENABLE_PIN), handle_cpu_request, FALLING);
 
 #if DEBUG
     Serial.println("Ready");
 #endif
+
+    // Interrupt the CPU to let it know that initialization is complete.
+    CPU_INT_DIRS |= CPU_INT_MASK;  // set interrupt pin to output
+    CPU_INT_PORT &= ~CPU_INT_MASK; // set output to zero
+    cpuint_pulled = true;
 }
 
 void loop() {
